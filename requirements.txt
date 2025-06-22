@@ -1,5 +1,6 @@
-yfinance 
-ta 
-pandas 
-openpyxl 
---quiet
+streamlit==1.35.0
+yfinance==0.2.40
+pandas==2.2.2
+ta==0.11.0
+matplotlib==3.8.4
+scipy==1.13.1
