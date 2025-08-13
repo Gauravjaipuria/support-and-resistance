@@ -1,134 +1,195 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import ta
+import numpy as np
 import matplotlib.pyplot as plt
+import ta
+from ta.momentum import RSIIndicator
+from ta.trend import SMAIndicator
 from scipy.stats import linregress
+import os
+import zipfile
 
-st.title("📊 Stock Technical Analysis Dashboard")
+st.set_page_config(page_title="Stock Strategies Hub", layout="wide")
 
-tickers_input = st.text_input("Enter tickers (comma-separated)", "TCS, RELIANCE")
-country = st.selectbox("Select Country", ["India", "Australia", "US"])
+# ---------------- BUY & HOLD STRATEGY ----------------
+def buy_and_hold_strategy(stock_symbol, years=3):
+    if not stock_symbol.endswith(".NS") and stock_symbol.isalpha():
+        stock_symbol += ".NS"
+    df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
+    if df.empty:
+        st.error(f"No data found for {stock_symbol}")
+        return None
+    df['Market Return'] = df['Close'].pct_change()
+    df['Cumulative Market Return'] = (1 + df['Market Return']).cumprod() - 1
+    return df
 
-suffix = ".NS" if country == "India" else ".AX" if country == "Australia" else ""
-tickers = [ticker.strip().upper() + suffix for ticker in tickers_input.split(",")]
+# ---------------- MOVING AVERAGE CROSSOVER ----------------
+def moving_average_crossover_strategy(stock_symbol, years=3, short_window=20, long_window=50):
+    if not stock_symbol.endswith(".NS") and stock_symbol.isalpha():
+        stock_symbol += ".NS"
+    df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
+    if df.empty: return None
+    df['MA_short'] = df['Close'].rolling(window=short_window).mean()
+    df['MA_long'] = df['Close'].rolling(window=long_window).mean()
+    df['Signal'] = 0
+    df.loc[df['MA_short'] > df['MA_long'], 'Signal'] = 1
+    df.loc[df['MA_short'] < df['MA_long'], 'Signal'] = -1
+    df['Position'] = df['Signal'].diff()
+    df['Market Return'] = df['Close'].pct_change()
+    df['Strategy Return'] = df['Market Return'] * df['Signal'].shift(1)
+    df['Cumulative Market Return'] = (1 + df['Market Return']).cumprod() - 1
+    df['Cumulative Strategy Return'] = (1 + df['Strategy Return']).cumprod() - 1
+    return df
 
-results = []
+# ---------------- RSI + SMA + STOPLOSS (SINGLE) ----------------
+def rsi_ma_stoploss_strategy(stock_symbol, years=3, investment_amount=100000,
+                             short_ma=20, long_ma=50, rsi_lower=30, rsi_upper=70, stoploss_pct=0.01, suffix=".NS"):
+    if not stock_symbol.endswith((".NS", ".AX")):
+        stock_symbol += suffix
+    df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
+    if df.empty: return None
+    close_series = df['Close']
+    df['RSI'] = RSIIndicator(close_series, window=14).rsi()
+    df['SMA_short'] = SMAIndicator(close_series, window=short_ma).sma_indicator()
+    df['SMA_long'] = SMAIndicator(close_series, window=long_ma).sma_indicator()
+    df['Signal'] = 0
+    df.loc[(df['RSI'] > rsi_lower) & (df['SMA_short'] > df['SMA_long']), 'Signal'] = 1
+    position = 0; entry_price = 0.0; trades = 0; positions_list = []; trade_log = []
+    for i in range(len(df)):
+        date = df.index[i]; price = close_series.iloc[i]
+        if position == 0:
+            if df['Signal'].iloc[i] == 1:
+                position = 1; entry_price = price; trades += 1
+                trade_log.append([date.date(), 'Buy', price])
+        else:
+            if price <= entry_price * (1 - stoploss_pct):
+                position = 0; trades += 1
+                trade_log.append([date.date(), 'Sell (Stoploss)', price])
+            elif df['SMA_short'].iloc[i] < df['SMA_long'].iloc[i] or df['RSI'].iloc[i] < rsi_upper:
+                position = 0; trades += 1
+                trade_log.append([date.date(), 'Sell (Trend Reversal)', price])
+        positions_list.append(position)
+    df['Position'] = positions_list
+    df['Market Return'] = close_series.pct_change()
+    df['Strategy Return'] = df['Market Return'] * df['Position'].shift(1).fillna(0)
+    df['Portfolio Value'] = investment_amount * (1 + df['Strategy Return']).cumprod()
+    return df, trade_log
 
-for ticker in tickers:
-    st.header(f"📈 {ticker}")
+# ---------------- MULTI STOCK RSI + SMA + STOPLOSS ----------------
+def rsi_ma_stoploss_backtest(stock_symbol, years=3, investment_amount=100000,
+                             short_ma=20, long_ma=50, rsi_lower=30, rsi_upper=70, stoploss_pct=0.01, suffix=".NS"):
+    if not stock_symbol.endswith((".NS", ".AX")): stock_symbol += suffix
+    df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
+    if df.empty: return None
+    close_series = df['Close']
+    df['RSI'] = RSIIndicator(close_series, window=14).rsi()
+    df['SMA_short'] = SMAIndicator(close_series, window=short_ma).sma_indicator()
+    df['SMA_long'] = SMAIndicator(close_series, window=long_ma).sma_indicator()
+    df['Signal'] = 0
+    df.loc[(df['RSI'] > rsi_lower) & (df['SMA_short'] > df['SMA_long']), 'Signal'] = 1
+    position = 0; entry_price = 0.0; trades = 0; positions_list = []
+    for i in range(len(df)):
+        price = close_series.iloc[i]
+        if position == 0:
+            if df['Signal'].iloc[i] == 1: position, entry_price, trades = 1, price, trades+1
+        else:
+            if price <= entry_price * (1 - stoploss_pct):
+                position, trades = 0, trades+1
+            elif df['SMA_short'].iloc[i] < df['SMA_long'].iloc[i] or df['RSI'].iloc[i] < rsi_upper:
+                position, trades = 0, trades+1
+        positions_list.append(position)
+    df['Position'] = positions_list
+    df['Market Return'] = close_series.pct_change()
+    df['Strategy Return'] = df['Market Return'] * df['Position'].shift(1).fillna(0)
+    df['Portfolio Value'] = investment_amount * (1 + df['Strategy Return']).cumprod()
+    last_action_idx = df.index[(df['Position'] != df['Position'].shift(1).fillna(0))].max()
+    last_action_price = close_series.loc[last_action_idx] if pd.notnull(last_action_idx) else np.nan
+    return {
+        'Ticker': stock_symbol,
+        'Final Portfolio Value': round(df['Portfolio Value'].iloc[-1], 2),
+        'Total Return (%)': round((df['Portfolio Value'].iloc[-1] / investment_amount - 1) * 100, 2),
+        'Trades Executed': trades,
+        'Last Action Date': str(last_action_idx.date()) if pd.notnull(last_action_idx) else "No trades",
+        'Last Action Price': round(last_action_price, 2) if pd.notnull(last_action_idx) else "NA"
+    }
+
+# ---------------- BREAKOUT & SUPPORT ----------------
+def support_resistance_analysis(ticker, suffix):
+    ticker += suffix
     stock = yf.Ticker(ticker)
     hist_6mo = stock.history(period="6mo")
     hist_1y = stock.history(period="1y")
-    info = stock.info
-
-    if hist_6mo.empty or hist_1y.empty or 'Close' not in hist_6mo:
-        st.warning(f"No data for {ticker}")
-        continue
-
-    hist = hist_6mo.copy()
-    hist['RSI'] = ta.momentum.RSIIndicator(close=hist['Close']).rsi()
-    hist['MACD'] = ta.trend.MACD(close=hist['Close']).macd()
-    hist['OBV'] = ta.volume.OnBalanceVolumeIndicator(hist['Close'], hist['Volume']).on_balance_volume()
-    hist['ADX'] = ta.trend.ADXIndicator(hist['High'], hist['Low'], hist['Close']).adx()
-    hist['VWAP'] = (hist['Volume'] * (hist['High'] + hist['Low'] + hist['Close']) / 3).cumsum() / hist['Volume'].cumsum()
-    hist['20-Day Avg Volume'] = hist['Volume'].rolling(20).mean()
-    hist['Volume Spike'] = hist['Volume'] > 2 * hist['20-Day Avg Volume']
-
-    recent = hist.iloc[-1]
+    if hist_6mo.empty: return None
+    r1y_min = hist_1y['Close'].min()
+    r1y_max = hist_1y['Close'].max()
+    recent = hist_6mo.iloc[-1]
     high, low, close = recent['High'], recent['Low'], recent['Close']
     pivot = (high + low + close) / 3
     s1 = (2 * pivot) - high
-    s2 = pivot - (high - low)
     r1 = (2 * pivot) - low
-    r2 = pivot + (high - low)
+    return {"Ticker": ticker, "Support 1": round(s1,2), "Resistance 1": round(r1,2), "1Y Low": round(r1y_min,2), "1Y High": round(r1y_max,2)}
 
-    rsi = round(hist['RSI'].dropna().iloc[-1], 2) if not hist['RSI'].dropna().empty else None
-    macd = round(hist['MACD'].dropna().iloc[-1], 2) if not hist['MACD'].dropna().empty else None
-    adx = round(hist['ADX'].dropna().iloc[-1], 2) if not hist['ADX'].dropna().empty else None
-    vwap_now = round(hist['VWAP'].iloc[-1], 2)
-    rvol = round(hist['Volume'].iloc[-1] / hist['20-Day Avg Volume'].iloc[-1], 2) if hist['20-Day Avg Volume'].iloc[-1] != 0 else None
-    obv_now = hist['OBV'].dropna().iloc[-1] if not hist['OBV'].dropna().empty else None
-    obv_prev = hist['OBV'].dropna().iloc[-2] if len(hist['OBV'].dropna()) > 1 else None
-    vol_spike = hist['Volume Spike'].iloc[-1]
-    price_prev = hist['Close'].iloc[-2] if len(hist) > 1 else close
+# ------------------- STREAMLIT UI -------------------
+st.sidebar.title("Choose Strategy")
+choice = st.sidebar.selectbox("Select", ["Buy & Hold", "Moving Average Crossover", "RSI+SMA+Stoploss (Single)", "RSI+SMA+Stoploss (Multi)", "Support/Resistance"])
 
-    support_1y = round(hist_1y['Close'].min(), 2)
-    resistance_1y = round(hist_1y['Close'].max(), 2)
+if choice == "Buy & Hold":
+    symbol = st.text_input("Stock Symbol", "RELIANCE")
+    years = st.number_input("Years", 1, 15, 3)
+    if st.button("Run Strategy"):
+        df = buy_and_hold_strategy(symbol, years)
+        if df is not None:
+            fig, ax = plt.subplots()
+            ax.plot(df.index, df['Cumulative Market Return'], label="Buy & Hold Return")
+            ax.legend(); ax.grid()
+            st.pyplot(fig)
 
-    if vol_spike and close > price_prev and obv_now > obv_prev:
-        volume_signal = "Accumulation"
-    elif vol_spike and close < price_prev:
-        volume_signal = "Distribution"
-    elif vol_spike and abs(close - price_prev) < 0.5:
-        volume_signal = "Absorption"
-    else:
-        volume_signal = "Neutral"
+elif choice == "Moving Average Crossover":
+    symbol = st.text_input("Stock Symbol", "RELIANCE")
+    years = st.number_input("Years", 1, 15, 3)
+    s_win = st.number_input("Short MA", 5, 100, 20)
+    l_win = st.number_input("Long MA", 10, 200, 50)
+    if st.button("Run Strategy"):
+        df = moving_average_crossover_strategy(symbol, years, s_win, l_win)
+        if df is not None:
+            fig, ax = plt.subplots()
+            ax.plot(df.index, df['Cumulative Market Return'], label="Market")
+            ax.plot(df.index, df['Cumulative Strategy Return'], label="Strategy")
+            ax.legend(); ax.grid()
+            st.pyplot(fig)
 
-    if rsi is not None:
-        if rsi < 40:
-            rsi_signal = "Buy"
-        elif rsi > 60:
-            rsi_signal = "Sell"
-        else:
-            rsi_signal = "Hold"
-    else:
-        rsi_signal = "No Signal"
+elif choice == "RSI+SMA+Stoploss (Single)":
+    symbol = st.text_input("Stock Symbol", "RELIANCE")
+    years = st.number_input("Years", 1, 15, 3)
+    invest = st.number_input("Investment", 1000, 10000000, 100000)
+    country = st.selectbox("Country", ["India", "Australia", "US"])
+    suffix = ".NS" if country=="India" else ".AX" if country=="Australia" else ""
+    if st.button("Run Strategy"):
+        df, log = rsi_ma_stoploss_strategy(symbol, years, invest, suffix=suffix)
+        st.write(pd.DataFrame(log, columns=["Date", "Action", "Price"]))
+        st.line_chart(df['Portfolio Value'])
 
-    if adx is not None:
-        if adx > 25:
-            trend_strength = "Strong Trend"
-        elif adx < 20:
-            trend_strength = "Weak/Sideways"
-        else:
-            trend_strength = "Moderate"
-    else:
-        trend_strength = "Unknown"
+elif choice == "RSI+SMA+Stoploss (Multi)":
+    symbols = st.text_input("Symbols comma-separated", "RELIANCE,TCS")
+    years = st.number_input("Years", 1, 15, 3)
+    invest = st.number_input("Investment", 1000, 10000000, 100000)
+    country = st.selectbox("Country", ["India", "Australia", "US"])
+    suffix = ".NS" if country=="India" else ".AX" if country=="Australia" else ""
+    if st.button("Run Backtest"):
+        results = []
+        for s in symbols.split(","):
+            res = rsi_ma_stoploss_backtest(s.strip().upper(), years, invest, suffix=suffix)
+            results.append(res)
+        st.dataframe(pd.DataFrame(results))
 
-    vwap_bias = "Bullish Bias" if close > vwap_now else "Bearish Bias"
-
-    short_term_risk = "Neutral"
-    if (abs(close - price_prev) / price_prev) > 0.05 and vol_spike:
-        short_term_risk = "High Volatility"
-    elif vol_spike:
-        short_term_risk = "Likely Speculation"
-    elif rsi and (rsi > 70 or rsi < 30):
-        short_term_risk = "RSI Extreme"
-
-    if volume_signal == "Accumulation" and short_term_risk == "Neutral" and vwap_bias == "Bullish Bias" and trend_strength == "Strong Trend":
-        investor_signal = "Strong Long-Term Buy Setup"
-    elif short_term_risk != "Neutral":
-        investor_signal = "Short-Term Volatility"
-    elif vwap_bias == "Bearish Bias" and trend_strength == "Weak/Sideways":
-        investor_signal = "Avoid - Weak Setup"
-    else:
-        investor_signal = "Unclear"
-
-    last_30_vol = hist['Volume'].tail(30).reset_index(drop=True)
-    x_vals = range(len(last_30_vol))
-    slope, intercept, *_ = linregress(x_vals, last_30_vol)
-    vol_trend = "Increasing" if slope > 0 else "Decreasing" if slope < 0 else "Flat"
-
-    st.markdown(f"""
-    **Price**: {close}  
-    **52W High**: {info.get("fiftyTwoWeekHigh")}  
-    **52W Low**: {info.get("fiftyTwoWeekLow")}  
-    **Support 1 / 2**: {round(s1, 2)} / {round(s2, 2)}  
-    **Resistance 1 / 2**: {round(r1, 2)} / {round(r2, 2)}  
-    **1Y Support / Resistance**: {support_1y} / {resistance_1y}  
-    **P/E Ratio**: {info.get("trailingPE")}  
-    **Beta**: {info.get("beta")}  
-    **RSI**: {rsi} ({rsi_signal})  
-    **MACD**: {macd}  
-    **ADX**: {adx} ({trend_strength})  
-    **VWAP**: {vwap_now} ({vwap_bias})  
-    **Relative Volume**: {rvol}  
-    **OBV**: {round(obv_now, 2) if obv_now else None}  
-    **Volume Signal**: {volume_signal}  
-    **Volatility**: {short_term_risk}  
-    **Investor Signal**: **{investor_signal}**  
-    **Volume Trend (30D)**: {vol_trend}  
-    """)
-
-    st.line_chart(hist['Close'].tail(90))
-    st.bar_chart(hist['Volume'].tail(30))
+elif choice == "Support/Resistance":
+    symbols = st.text_input("Symbols", "RELIANCE,TCS")
+    country = st.selectbox("Country", ["India", "Australia", "US"])
+    suffix = ".NS" if country=="India" else ".AX" if country=="Australia" else ""
+    if st.button("Analyze"):
+        results = []
+        for s in symbols.split(","):
+            r = support_resistance_analysis(s.strip().upper(), suffix)
+            if r: results.append(r)
+        st.dataframe(pd.DataFrame(results))
