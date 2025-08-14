@@ -7,10 +7,15 @@ import ta
 from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
 from scipy.stats import linregress
-import os
-import zipfile
 
 st.set_page_config(page_title="Stock Strategies Hub", layout="wide")
+
+# ---------------- Helper: safe close price ----------------
+def get_close_series(df):
+    close_series = df['Close']
+    if isinstance(close_series, pd.DataFrame):
+        close_series = close_series.iloc[:, 0]
+    return close_series
 
 # ---------------- BUY & HOLD STRATEGY ----------------
 def buy_and_hold_strategy(stock_symbol, years=3):
@@ -18,7 +23,6 @@ def buy_and_hold_strategy(stock_symbol, years=3):
         stock_symbol += ".NS"
     df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
     if df.empty:
-        st.error(f"No data found for {stock_symbol}")
         return None
     df['Market Return'] = df['Close'].pct_change()
     df['Cumulative Market Return'] = (1 + df['Market Return']).cumprod() - 1
@@ -29,7 +33,8 @@ def moving_average_crossover_strategy(stock_symbol, years=3, short_window=20, lo
     if not stock_symbol.endswith(".NS") and stock_symbol.isalpha():
         stock_symbol += ".NS"
     df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
-    if df.empty: return None
+    if df.empty:
+        return None
     df['MA_short'] = df['Close'].rolling(window=short_window).mean()
     df['MA_long'] = df['Close'].rolling(window=long_window).mean()
     df['Signal'] = 0
@@ -44,12 +49,14 @@ def moving_average_crossover_strategy(stock_symbol, years=3, short_window=20, lo
 
 # ---------------- RSI + SMA + STOPLOSS (SINGLE) ----------------
 def rsi_ma_stoploss_strategy(stock_symbol, years=3, investment_amount=100000,
-                             short_ma=20, long_ma=50, rsi_lower=30, rsi_upper=70, stoploss_pct=0.01, suffix=".NS"):
+                             short_ma=20, long_ma=50, rsi_lower=30, rsi_upper=70,
+                             stoploss_pct=0.01, suffix=".NS"):
     if not stock_symbol.endswith((".NS", ".AX")):
         stock_symbol += suffix
     df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
-    if df.empty: return None
-    close_series = df['Close']
+    if df.empty:
+        return None, []
+    close_series = get_close_series(df)
     df['RSI'] = RSIIndicator(close_series, window=14).rsi()
     df['SMA_short'] = SMAIndicator(close_series, window=short_ma).sma_indicator()
     df['SMA_long'] = SMAIndicator(close_series, window=long_ma).sma_indicator()
@@ -78,11 +85,14 @@ def rsi_ma_stoploss_strategy(stock_symbol, years=3, investment_amount=100000,
 
 # ---------------- MULTI STOCK RSI + SMA + STOPLOSS ----------------
 def rsi_ma_stoploss_backtest(stock_symbol, years=3, investment_amount=100000,
-                             short_ma=20, long_ma=50, rsi_lower=30, rsi_upper=70, stoploss_pct=0.01, suffix=".NS"):
-    if not stock_symbol.endswith((".NS", ".AX")): stock_symbol += suffix
+                             short_ma=20, long_ma=50, rsi_lower=30, rsi_upper=70,
+                             stoploss_pct=0.01, suffix=".NS"):
+    if not stock_symbol.endswith((".NS", ".AX")):
+        stock_symbol += suffix
     df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
-    if df.empty: return None
-    close_series = df['Close']
+    if df.empty:
+        return None
+    close_series = get_close_series(df)
     df['RSI'] = RSIIndicator(close_series, window=14).rsi()
     df['SMA_short'] = SMAIndicator(close_series, window=short_ma).sma_indicator()
     df['SMA_long'] = SMAIndicator(close_series, window=long_ma).sma_indicator()
@@ -120,7 +130,8 @@ def support_resistance_analysis(ticker, suffix):
     stock = yf.Ticker(ticker)
     hist_6mo = stock.history(period="6mo")
     hist_1y = stock.history(period="1y")
-    if hist_6mo.empty: return None
+    if hist_6mo.empty:
+        return None
     r1y_min = hist_1y['Close'].min()
     r1y_max = hist_1y['Close'].max()
     recent = hist_6mo.iloc[-1]
@@ -167,8 +178,9 @@ elif choice == "RSI+SMA+Stoploss (Single)":
     suffix = ".NS" if country=="India" else ".AX" if country=="Australia" else ""
     if st.button("Run Strategy"):
         df, log = rsi_ma_stoploss_strategy(symbol, years, invest, suffix=suffix)
-        st.write(pd.DataFrame(log, columns=["Date", "Action", "Price"]))
-        st.line_chart(df['Portfolio Value'])
+        if df is not None:
+            st.write(pd.DataFrame(log, columns=["Date", "Action", "Price"]))
+            st.line_chart(df['Portfolio Value'])
 
 elif choice == "RSI+SMA+Stoploss (Multi)":
     symbols = st.text_input("Symbols comma-separated", "RELIANCE,TCS")
@@ -180,8 +192,9 @@ elif choice == "RSI+SMA+Stoploss (Multi)":
         results = []
         for s in symbols.split(","):
             res = rsi_ma_stoploss_backtest(s.strip().upper(), years, invest, suffix=suffix)
-            results.append(res)
-        st.dataframe(pd.DataFrame(results))
+            if res:
+                results.append(res)
+        if results: st.dataframe(pd.DataFrame(results))
 
 elif choice == "Support/Resistance":
     symbols = st.text_input("Symbols", "RELIANCE,TCS")
@@ -191,5 +204,6 @@ elif choice == "Support/Resistance":
         results = []
         for s in symbols.split(","):
             r = support_resistance_analysis(s.strip().upper(), suffix)
-            if r: results.append(r)
-        st.dataframe(pd.DataFrame(results))
+            if r:
+                results.append(r)
+        if results: st.dataframe(pd.DataFrame(results))
