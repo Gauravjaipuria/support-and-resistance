@@ -10,7 +10,16 @@ from scipy.stats import linregress
 
 st.set_page_config(page_title="Stock Strategies Hub", layout="wide")
 
-# ---------------- Helper: safe close price ----------------
+# ----------- Helper: country suffix ------------
+def get_country_suffix(country):
+    country = country.lower()
+    if country == "india":
+        return ".NS"
+    elif country == "australia":
+        return ".AX"
+    else:
+        return ""
+
 def get_close_series(df):
     close_series = df['Close']
     if isinstance(close_series, pd.DataFrame):
@@ -18,9 +27,10 @@ def get_close_series(df):
     return close_series
 
 # ---------------- BUY & HOLD STRATEGY ----------------
-def buy_and_hold_strategy(stock_symbol, years=3):
-    if not stock_symbol.endswith(".NS") and stock_symbol.isalpha():
-        stock_symbol += ".NS"
+def buy_and_hold_strategy(stock_symbol, years=3, country="India"):
+    suffix = get_country_suffix(country)
+    if not stock_symbol.endswith((".NS", ".AX")) and stock_symbol.isalpha():
+        stock_symbol += suffix
     df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
     if df.empty:
         return None
@@ -29,9 +39,10 @@ def buy_and_hold_strategy(stock_symbol, years=3):
     return df
 
 # ---------------- MOVING AVERAGE CROSSOVER ----------------
-def moving_average_crossover_strategy(stock_symbol, years=3, short_window=20, long_window=50):
-    if not stock_symbol.endswith(".NS") and stock_symbol.isalpha():
-        stock_symbol += ".NS"
+def moving_average_crossover_strategy(stock_symbol, years=3, short_window=20, long_window=50, country="India"):
+    suffix = get_country_suffix(country)
+    if not stock_symbol.endswith((".NS", ".AX")) and stock_symbol.isalpha():
+        stock_symbol += suffix
     df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
     if df.empty:
         return None
@@ -50,7 +61,8 @@ def moving_average_crossover_strategy(stock_symbol, years=3, short_window=20, lo
 # ---------------- RSI + SMA + STOPLOSS (SINGLE) ----------------
 def rsi_ma_stoploss_strategy(stock_symbol, years=3, investment_amount=100000,
                              short_ma=20, long_ma=50, rsi_lower=30, rsi_upper=70,
-                             stoploss_pct=0.01, suffix=".NS"):
+                             stoploss_pct=0.01, country="India"):
+    suffix = get_country_suffix(country)
     if not stock_symbol.endswith((".NS", ".AX")):
         stock_symbol += suffix
     df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
@@ -86,7 +98,8 @@ def rsi_ma_stoploss_strategy(stock_symbol, years=3, investment_amount=100000,
 # ---------------- MULTI STOCK RSI + SMA + STOPLOSS ----------------
 def rsi_ma_stoploss_backtest(stock_symbol, years=3, investment_amount=100000,
                              short_ma=20, long_ma=50, rsi_lower=30, rsi_upper=70,
-                             stoploss_pct=0.01, suffix=".NS"):
+                             stoploss_pct=0.01, country="India"):
+    suffix = get_country_suffix(country)
     if not stock_symbol.endswith((".NS", ".AX")):
         stock_symbol += suffix
     df = yf.download(stock_symbol, period=f"{years}y", interval="1d", auto_adjust=True)
@@ -125,7 +138,8 @@ def rsi_ma_stoploss_backtest(stock_symbol, years=3, investment_amount=100000,
     }
 
 # ---------------- BREAKOUT & SUPPORT ----------------
-def support_resistance_analysis(ticker, suffix):
+def support_resistance_analysis(ticker, country="India"):
+    suffix = get_country_suffix(country)
     ticker += suffix
     stock = yf.Ticker(ticker)
     hist_6mo = stock.history(period="6mo")
@@ -139,7 +153,13 @@ def support_resistance_analysis(ticker, suffix):
     pivot = (high + low + close) / 3
     s1 = (2 * pivot) - high
     r1 = (2 * pivot) - low
-    return {"Ticker": ticker, "Support 1": round(s1,2), "Resistance 1": round(r1,2), "1Y Low": round(r1y_min,2), "1Y High": round(r1y_max,2)}
+    return {
+        "Ticker": ticker,
+        "Support 1": round(s1,2),
+        "Resistance 1": round(r1,2),
+        "1Y Low": round(r1y_min,2),
+        "1Y High": round(r1y_max,2)
+    }
 
 # ------------------- STREAMLIT UI -------------------
 st.sidebar.title("Choose Strategy")
@@ -147,9 +167,10 @@ choice = st.sidebar.selectbox("Select", ["Buy & Hold", "Moving Average Crossover
 
 if choice == "Buy & Hold":
     symbol = st.text_input("Stock Symbol", "RELIANCE")
+    country = st.selectbox("Country", ["India", "Australia", "US"], key="bnh_country")
     years = st.number_input("Years", 1, 15, 3)
     if st.button("Run Strategy"):
-        df = buy_and_hold_strategy(symbol, years)
+        df = buy_and_hold_strategy(symbol, years, country)
         if df is not None:
             fig, ax = plt.subplots()
             ax.plot(df.index, df['Cumulative Market Return'], label="Buy & Hold Return")
@@ -158,11 +179,12 @@ if choice == "Buy & Hold":
 
 elif choice == "Moving Average Crossover":
     symbol = st.text_input("Stock Symbol", "RELIANCE")
+    country = st.selectbox("Country", ["India", "Australia", "US"], key="mac_country")
     years = st.number_input("Years", 1, 15, 3)
     s_win = st.number_input("Short MA", 5, 100, 20)
     l_win = st.number_input("Long MA", 10, 200, 50)
     if st.button("Run Strategy"):
-        df = moving_average_crossover_strategy(symbol, years, s_win, l_win)
+        df = moving_average_crossover_strategy(symbol, years, s_win, l_win, country)
         if df is not None:
             fig, ax = plt.subplots()
             ax.plot(df.index, df['Cumulative Market Return'], label="Market")
@@ -172,38 +194,35 @@ elif choice == "Moving Average Crossover":
 
 elif choice == "RSI+SMA+Stoploss (Single)":
     symbol = st.text_input("Stock Symbol", "RELIANCE")
+    country = st.selectbox("Country", ["India", "Australia", "US"], key="singlerm_country")
     years = st.number_input("Years", 1, 15, 3)
     invest = st.number_input("Investment", 1000, 10000000, 100000)
-    country = st.selectbox("Country", ["India", "Australia", "US"])
-    suffix = ".NS" if country=="India" else ".AX" if country=="Australia" else ""
     if st.button("Run Strategy"):
-        df, log = rsi_ma_stoploss_strategy(symbol, years, invest, suffix=suffix)
+        df, log = rsi_ma_stoploss_strategy(symbol, years, invest, country=country)
         if df is not None:
             st.write(pd.DataFrame(log, columns=["Date", "Action", "Price"]))
             st.line_chart(df['Portfolio Value'])
 
 elif choice == "RSI+SMA+Stoploss (Multi)":
     symbols = st.text_input("Symbols comma-separated", "RELIANCE,TCS")
+    country = st.selectbox("Country", ["India", "Australia", "US"], key="multirm_country")
     years = st.number_input("Years", 1, 15, 3)
     invest = st.number_input("Investment", 1000, 10000000, 100000)
-    country = st.selectbox("Country", ["India", "Australia", "US"])
-    suffix = ".NS" if country=="India" else ".AX" if country=="Australia" else ""
     if st.button("Run Backtest"):
         results = []
         for s in symbols.split(","):
-            res = rsi_ma_stoploss_backtest(s.strip().upper(), years, invest, suffix=suffix)
+            res = rsi_ma_stoploss_backtest(s.strip().upper(), years, invest, country=country)
             if res:
                 results.append(res)
         if results: st.dataframe(pd.DataFrame(results))
 
 elif choice == "Support/Resistance":
     symbols = st.text_input("Symbols", "RELIANCE,TCS")
-    country = st.selectbox("Country", ["India", "Australia", "US"])
-    suffix = ".NS" if country=="India" else ".AX" if country=="Australia" else ""
+    country = st.selectbox("Country", ["India", "Australia", "US"], key="sr_country")
     if st.button("Analyze"):
         results = []
         for s in symbols.split(","):
-            r = support_resistance_analysis(s.strip().upper(), suffix)
+            r = support_resistance_analysis(s.strip().upper(), country)
             if r:
                 results.append(r)
         if results: st.dataframe(pd.DataFrame(results))
