@@ -1,30 +1,25 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
 
-# ================= CONFIG =================
+# =================== Streamlit Config ===================
 st.set_page_config(page_title="📈 Stock Strategies Hub", layout="wide")
 st.markdown("""
 <style>
-.main { background-color: #f8f9fa; }
-h1,h2,h3 { color: #2c3e50; }
-.stButton>button { background-color: #2ecc71; color: white; font-weight:bold; }
+.main {background-color: #f8f9fa;}
+h1,h2,h3 { color: #2c3e50;}
+.stButton>button {background-color: #2ecc71; color: white; font-weight: bold;}
 </style>
 """, unsafe_allow_html=True)
 
-# ================= HELPERS =================
+# =================== Helper Functions ===================
 def get_country_suffix(country):
     country = country.lower()
-    if country == "india":
-        return ".NS"
-    elif country == "australia":
-        return ".AX"
-    else:
-        return ""  # US
+    if country == "india": return ".NS"
+    elif country == "australia": return ".AX"
+    return ""
 
 def get_close_series(df):
     close_series = df['Close']
@@ -32,7 +27,7 @@ def get_close_series(df):
         close_series = close_series.iloc[:, 0]
     return close_series
 
-# ================= STRATEGIES =================
+# =================== Strategies ===================
 def buy_and_hold_strategy(symbol, years, country):
     suffix = get_country_suffix(country)
     if not symbol.endswith((".NS", ".AX")):
@@ -49,8 +44,8 @@ def moving_average_crossover_strategy(symbol, years, short_window, long_window, 
         symbol += suffix
     df = yf.download(symbol, period=f"{years}y", interval="1d", auto_adjust=True)
     if df.empty: return None
-    df['MA_short'] = df['Close'].rolling(short_window).mean()
-    df['MA_long'] = df['Close'].rolling(long_window).mean()
+    df['MA_short'] = df['Close'].rolling(window=short_window).mean()
+    df['MA_long'] = df['Close'].rolling(window=long_window).mean()
     df['Signal'] = 0
     df.loc[df['MA_short'] > df['MA_long'], 'Signal'] = 1
     df.loc[df['MA_short'] < df['MA_long'], 'Signal'] = -1
@@ -123,18 +118,19 @@ def rsi_ma_stoploss_backtest(symbol, years, invest, short_ma, long_ma,
     df['Strategy Return'] = df['Market Return'] * df['Position'].shift(1).fillna(0)
     df['Portfolio Value'] = invest * (1 + df['Strategy Return']).cumprod()
     last_action_idx = df.index[(df['Position'] != df['Position'].shift(1).fillna(0))].max()
-    last_action_price = close_series.loc[last_action_idx] if pd.notnull(last_action_idx) else np.nan
+    last_action_price = close_series.loc[last_action_idx] if pd.notnull(last_action_idx) else "NA"
     return {
         'Ticker': symbol,
         'Final Portfolio Value': round(df['Portfolio Value'].iloc[-1], 2),
         'Total Return (%)': round((df['Portfolio Value'].iloc[-1] / invest - 1) * 100, 2),
         'Trades Executed': trades,
         'Last Action Date': str(last_action_idx.date()) if pd.notnull(last_action_idx) else "No trades",
-        'Last Action Price': round(last_action_price, 2) if pd.notnull(last_action_idx) else "NA"
+        'Last Action Price': round(last_action_price, 2) if last_action_price != "NA" else "NA"
     }
 
-# ================= UI =================
+# =================== Streamlit UI ===================
 st.title("📊 Stock Strategies Hub")
+
 choice = st.sidebar.selectbox("Select Strategy", 
     ["Buy & Hold", "Moving Average Crossover", "RSI+SMA+Stoploss (Single)", "RSI+SMA+Stoploss (Multi)"])
 
@@ -145,16 +141,20 @@ if choice == "Buy & Hold":
     with col2:
         country = st.selectbox("Country", ["India", "Australia", "US"])
     with col3:
-        years = st.number_input("Years", 1, 20, 3)
+        years = st.number_input("Years", 1, 20, 3)  # ✅ Fixed indentation
     if st.button("Run Strategy"):
         df = buy_and_hold_strategy(symbol, years, country)
         if df is not None:
             st.line_chart(df['Cumulative Market Return'])
 
 elif choice == "Moving Average Crossover":
-    symbol = st.text_input("Symbol", "RELIANCE")
-    country = st.selectbox("Country", ["India", "Australia", "US"])
-    years = st.number_input("Years", 1, 20, 3)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        symbol = st.text_input("Symbol", "RELIANCE")
+    with col2:
+        country = st.selectbox("Country", ["India", "Australia", "US"])
+    with col3:
+        years = st.number_input("Years", 1, 20, 3)
     s_win = st.number_input("Short MA", 5, 100, 20)
     l_win = st.number_input("Long MA", 10, 200, 50)
     if st.button("Run Strategy"):
